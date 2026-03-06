@@ -1170,6 +1170,10 @@ export default function Match3Game() {
         type: Phaser.AUTO,
         width: GAME_WIDTH,
         height: GAME_HEIGHT,
+        scale: {
+          mode: Phaser.Scale.FIT,
+          autoCenter: Phaser.Scale.NO_CENTER,
+        },
         parent: mountRef.current ?? undefined,
         transparent: true,
         scene: Match3Scene,
