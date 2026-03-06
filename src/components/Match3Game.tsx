@@ -11,13 +11,14 @@ const ROWS = 10;
 const COLS = 10;
 const CELL_SIZE = 50;
 const BALL_RADIUS = 22;
-const GAME_WIDTH = 1024;
+const GAME_WIDTH = 576;
 const GAME_HEIGHT = 1024;
 const START_TIME_MS = 90_000;
 const LEADERBOARD_KEY = "gumball-blitz-top10";
 const CELL_INVALID = -2;
 const GLOBE_CENTER_X = GAME_WIDTH / 2;
-const GLOBE_CENTER_Y = 328;
+const GLOBE_CENTER_Y_MOBILE = 350;
+const GLOBE_CENTER_Y_DESKTOP = 328;
 const GLOBE_INNER_RX = 220;
 const GLOBE_INNER_RY = 218;
 
@@ -39,6 +40,7 @@ export default function Match3Game() {
         private selected: GridPos | null = null;
         private phase: Phase = "start";
         private locked = true;
+        private globeCenterY = GLOBE_CENTER_Y_DESKTOP;
         private lastInteractionMs = 0;
         private hintTween: import("phaser").Tweens.Tween | null = null;
         private hintedCell: GridPos | null = null;
@@ -76,9 +78,11 @@ export default function Match3Game() {
           this.load.image("machine-bg-1024", "/images/gumball-machine-1024.webp");
           this.load.image("machine-bg-1536", "/images/gumball-machine-1536.webp");
           this.load.image("machine-bg-2048", "/images/gumball-machine-2048.webp");
+          this.load.image("machine-bg-portrait", "/images/gumball-machine-portrait.webp");
         }
 
         create() {
+          this.globeCenterY = window.innerWidth <= 768 ? GLOBE_CENTER_Y_MOBILE : GLOBE_CENTER_Y_DESKTOP;
           this.cameras.main.setBackgroundColor(0x89d8e4);
           this.createBallTextures();
           this.createOverlayTextures();
@@ -106,7 +110,7 @@ export default function Match3Game() {
           this.selectionRing = this.add.graphics().setVisible(false).setDepth(25);
 
           this.gameOverText = this.add
-            .text(GLOBE_CENTER_X, GLOBE_CENTER_Y + 12, "TIME UP", {
+            .text(GLOBE_CENTER_X, this.globeCenterY + 12, "TIME UP", {
               color: "#ffffff",
               fontSize: "64px",
               fontStyle: "bold",
@@ -119,7 +123,7 @@ export default function Match3Game() {
             .setScale(0.92);
 
           this.countdownText = this.add
-            .text(GLOBE_CENTER_X, GLOBE_CENTER_Y + 12, "", {
+            .text(GLOBE_CENTER_X, this.globeCenterY + 12, "", {
               color: "#ffffff",
               fontSize: "86px",
               fontStyle: "bold",
@@ -176,7 +180,7 @@ export default function Match3Game() {
             for (let col = 0; col < COLS; col += 1) {
               const world = this.cellToWorld(row, col);
               const nx = (world.x - GLOBE_CENTER_X) / (GLOBE_INNER_RX - 6);
-              const ny = (world.y - GLOBE_CENTER_Y) / (GLOBE_INNER_RY - 8);
+              const ny = (world.y - this.globeCenterY) / (GLOBE_INNER_RY - 8);
               const inside = nx * nx + ny * ny <= 0.99;
               if (inside) {
                 this.playable[row][col] = true;
@@ -192,7 +196,7 @@ export default function Match3Game() {
           maskGraphic.fillStyle(0xffffff, 1);
           maskGraphic.fillEllipse(
             GLOBE_CENTER_X,
-            GLOBE_CENTER_Y,
+            this.globeCenterY,
             (GLOBE_INNER_RX - 2) * 2,
             (GLOBE_INNER_RY - 2) * 2,
           );
@@ -539,9 +543,21 @@ export default function Match3Game() {
 
         private drawMachineBackdropImage() {
           const dpr = window.devicePixelRatio || 1;
-          const key = dpr > 1.6 ? "machine-bg-2048" : dpr > 1.15 ? "machine-bg-1536" : "machine-bg-1024";
+          const isPortraitViewport = window.innerHeight >= window.innerWidth;
+          const key = isPortraitViewport
+            ? "machine-bg-portrait"
+            : dpr > 1.6
+              ? "machine-bg-2048"
+              : dpr > 1.15
+                ? "machine-bg-1536"
+                : "machine-bg-1024";
           if (this.textures.exists(key)) {
-            this.add.image(GAME_WIDTH / 2, GAME_HEIGHT / 2, key).setDisplaySize(GAME_WIDTH, GAME_HEIGHT).setDepth(0);
+            const tex = this.textures.get(key).getSourceImage() as { width: number; height: number };
+            const scale = Math.max(GAME_WIDTH / tex.width, GAME_HEIGHT / tex.height);
+            this.add
+              .image(GAME_WIDTH / 2, GAME_HEIGHT / 2, key)
+              .setScale(scale)
+              .setDepth(0);
             return;
           }
           this.drawMachineBackdropFallback();
@@ -550,7 +566,7 @@ export default function Match3Game() {
         private drawMachineBackdropFallback() {
           const g = this.add.graphics();
           const centerX = GLOBE_CENTER_X;
-          const globeY = GLOBE_CENTER_Y;
+          const globeY = this.globeCenterY;
           const globeR = 284;
 
           g.fillGradientStyle(0x89ddea, 0x7ed7e5, 0xa5e8f3, 0x93deeb, 1);
@@ -1161,7 +1177,7 @@ export default function Match3Game() {
           const rowOffset = (row - midRow) * 1.5;
           return {
             x: GLOBE_CENTER_X + (col - midCol) * CELL_SIZE + rowOffset,
-            y: GLOBE_CENTER_Y + (row - midRow) * CELL_SIZE,
+            y: this.globeCenterY + (row - midRow) * CELL_SIZE,
           };
         }
       }
