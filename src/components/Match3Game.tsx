@@ -27,6 +27,31 @@ export default function Match3Game() {
 
   useEffect(() => {
     let game: import("phaser").Game | null = null;
+    const container = mountRef.current;
+    const nameEntryInput = document.createElement("input");
+    nameEntryInput.type = "text";
+    nameEntryInput.maxLength = 3;
+    nameEntryInput.autocapitalize = "characters";
+    nameEntryInput.autocomplete = "off";
+    nameEntryInput.inputMode = "text";
+    nameEntryInput.spellcheck = false;
+    nameEntryInput.setAttribute("aria-label", "Enter initials");
+    nameEntryInput.style.position = "absolute";
+    nameEntryInput.style.left = "50%";
+    nameEntryInput.style.top = "50%";
+    nameEntryInput.style.width = "1px";
+    nameEntryInput.style.height = "1px";
+    nameEntryInput.style.opacity = "0";
+    nameEntryInput.style.pointerEvents = "none";
+    nameEntryInput.style.transform = "translate(-50%, -50%)";
+    nameEntryInput.style.zIndex = "3";
+
+    if (container) {
+      if (window.getComputedStyle(container).position === "static") {
+        container.style.position = "relative";
+      }
+      container.appendChild(nameEntryInput);
+    }
 
     const boot = async () => {
       const Phaser = await import("phaser");
@@ -47,6 +72,7 @@ export default function Match3Game() {
 
         private boardMask!: import("phaser").Display.Masks.GeometryMask;
         private keyboardHandler?: (event: KeyboardEvent) => void;
+        private detachNameInputListeners?: () => void;
 
         private score = 0;
         private topScores: ScoreEntry[] = [];
@@ -140,11 +166,41 @@ export default function Match3Game() {
 
           this.keyboardHandler = (event: KeyboardEvent) => this.handleKeyboard(event);
           this.input.keyboard?.on("keydown", this.keyboardHandler);
+          this.input.on("pointerdown", () => {
+            if (this.phase === "nameEntry") {
+              this.focusNameInput();
+            }
+          });
+
+          const onNameInput = () => {
+            if (this.phase !== "nameEntry") return;
+            const cleaned = nameEntryInput.value.toUpperCase().replace(/[^A-Z]/g, "").slice(0, 3);
+            if (cleaned !== nameEntryInput.value) {
+              nameEntryInput.value = cleaned;
+            }
+            this.nameEntry = cleaned;
+            this.updateNamePrompt();
+          };
+          const onNameInputKeyDown = (event: KeyboardEvent) => {
+            if (this.phase !== "nameEntry") return;
+            if (event.key === "Enter") {
+              event.preventDefault();
+              this.submitNameEntry();
+            }
+          };
+          nameEntryInput.addEventListener("input", onNameInput);
+          nameEntryInput.addEventListener("keydown", onNameInputKeyDown);
+          this.detachNameInputListeners = () => {
+            nameEntryInput.removeEventListener("input", onNameInput);
+            nameEntryInput.removeEventListener("keydown", onNameInputKeyDown);
+          };
 
           this.events.once("shutdown", () => {
             if (this.keyboardHandler) {
               this.input.keyboard?.off("keydown", this.keyboardHandler);
             }
+            this.blurNameInput();
+            this.detachNameInputListeners?.();
             this.clearIdleHint(false);
           });
 
@@ -449,9 +505,11 @@ export default function Match3Game() {
 
           void this.tween(this.overlayShade, { alpha: 0.66 }, 150, "Quad.easeOut");
           void this.tween(this.namePanel, { alpha: 1, scale: 1 }, 190, "Back.easeOut");
+          this.focusNameInput();
         }
 
         private handleKeyboard(event: KeyboardEvent) {
+          if (document.activeElement === nameEntryInput) return;
           if (this.phase === "nameEntry") {
             this.handleNameEntry(event);
           }
@@ -467,10 +525,7 @@ export default function Match3Game() {
           }
 
           if (key === "ENTER") {
-            if (this.nameEntry.length === 3) {
-              this.saveScore(this.nameEntry, this.score);
-              this.showScoreboardScreen();
-            }
+            this.submitNameEntry();
             return;
           }
 
@@ -483,10 +538,34 @@ export default function Match3Game() {
         private updateNamePrompt() {
           const slots = this.nameEntry.padEnd(3, "_").split("").join(" ");
           this.initialsText.setText(slots);
+          if (nameEntryInput.value !== this.nameEntry) {
+            nameEntryInput.value = this.nameEntry;
+          }
+        }
+
+        private submitNameEntry() {
+          if (this.nameEntry.length !== 3) return;
+          this.saveScore(this.nameEntry, this.score);
+          this.showScoreboardScreen();
+        }
+
+        private focusNameInput() {
+          if (this.phase !== "nameEntry") return;
+          const length = this.nameEntry.length;
+          nameEntryInput.value = this.nameEntry;
+          nameEntryInput.focus({ preventScroll: true });
+          nameEntryInput.setSelectionRange(length, length);
+        }
+
+        private blurNameInput() {
+          if (document.activeElement === nameEntryInput) {
+            nameEntryInput.blur();
+          }
         }
 
         private showScoreboardScreen() {
           this.phase = "scoreboard";
+          this.blurNameInput();
           this.namePanel.setVisible(false);
           this.renderLeaderboard();
           this.scoreHeaderText.setText("");
@@ -1202,6 +1281,7 @@ export default function Match3Game() {
       if (game) {
         game.destroy(true);
       }
+      nameEntryInput.remove();
     };
   }, []);
 
