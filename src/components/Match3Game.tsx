@@ -15,6 +15,7 @@ const GAME_WIDTH = 576;
 const GAME_HEIGHT = 1024;
 const START_TIME_MS = 90_000;
 const LEADERBOARD_KEY = "gumball-blitz-top10";
+const SFX_MUTED_KEY = "gumball-blitz-sfx-muted";
 const CELL_INVALID = -2;
 const GLOBE_CENTER_X = GAME_WIDTH / 2;
 const GLOBE_CENTER_Y_MOBILE = 350;
@@ -22,11 +23,231 @@ const GLOBE_CENTER_Y_DESKTOP = 328;
 const GLOBE_INNER_RX = 220;
 const GLOBE_INNER_RY = 218;
 
+class ProceduralSfx {
+  private context: AudioContext | null = null;
+  private master: GainNode | null = null;
+  private noiseBuffer: AudioBuffer | null = null;
+  private muted = false;
+  private readonly masterVolume = 0.72;
+
+  constructor() {
+    if (typeof window === "undefined") return;
+    this.muted = this.loadMutedPreference();
+
+    const win = window as Window & { webkitAudioContext?: typeof AudioContext };
+    const AudioContextCtor = window.AudioContext ?? win.webkitAudioContext;
+    if (!AudioContextCtor) return;
+
+    try {
+      this.context = new AudioContextCtor();
+      this.master = this.context.createGain();
+      this.applyMasterGain();
+      this.master.connect(this.context.destination);
+    } catch {
+      this.context = null;
+      this.master = null;
+    }
+  }
+
+  isMuted() {
+    return this.muted;
+  }
+
+  toggleMuted() {
+    this.muted = !this.muted;
+    this.persistMutedPreference();
+    this.applyMasterGain();
+    return this.muted;
+  }
+
+  unlock() {
+    const ctx = this.context;
+    if (!ctx || ctx.state !== "suspended") return;
+    void ctx.resume().catch(() => undefined);
+  }
+
+  destroy() {
+    const ctx = this.context;
+    this.context = null;
+    this.master = null;
+    this.noiseBuffer = null;
+    if (ctx && ctx.state !== "closed") {
+      void ctx.close().catch(() => undefined);
+    }
+  }
+
+  playStart() {
+    this.tone({ freq: 520, slideTo: 680, duration: 0.09, volume: 0.11, type: "triangle" });
+    this.tone({ freq: 760, duration: 0.08, volume: 0.09, type: "sine", delay: 0.04 });
+  }
+
+  playCountdownTick(step: number) {
+    const clamped = Math.max(1, Math.min(3, step));
+    const freq = 420 + clamped * 65;
+    this.tone({ freq, duration: 0.09, volume: 0.12, type: "square" });
+  }
+
+  playGo() {
+    this.tone({ freq: 580, slideTo: 760, duration: 0.1, volume: 0.12, type: "sawtooth" });
+    this.tone({ freq: 960, duration: 0.11, volume: 0.08, type: "triangle", delay: 0.02 });
+    this.noise({ duration: 0.07, volume: 0.06, centerFreq: 2400 });
+  }
+
+  playSelect() {
+    this.tone({ freq: 760, duration: 0.05, volume: 0.08, type: "triangle" });
+  }
+
+  playSwap() {
+    this.tone({ freq: 250, slideTo: 390, duration: 0.09, volume: 0.07, type: "sawtooth" });
+  }
+
+  playInvalidMove() {
+    this.tone({ freq: 210, slideTo: 140, duration: 0.12, volume: 0.1, type: "square" });
+    this.noise({ duration: 0.08, volume: 0.05, centerFreq: 900 });
+  }
+
+  playMatch(count: number) {
+    const clamped = Math.max(3, Math.min(12, count));
+    const base = 420 + (clamped - 3) * 20;
+    const volumeBoost = 1 + (clamped - 3) * 0.05;
+    this.tone({ freq: base, slideTo: base + 170, duration: 0.1, volume: 0.08 * volumeBoost, type: "triangle" });
+    this.tone({ freq: base + 240, duration: 0.08, volume: 0.05 * volumeBoost, type: "sine", delay: 0.02 });
+  }
+
+  playDrop() {
+    this.tone({ freq: 180, slideTo: 130, duration: 0.08, volume: 0.04, type: "triangle" });
+  }
+
+  playNoMoves() {
+    this.tone({ freq: 300, slideTo: 180, duration: 0.14, volume: 0.09, type: "square" });
+    this.tone({ freq: 190, slideTo: 130, duration: 0.12, volume: 0.07, type: "sawtooth", delay: 0.05 });
+  }
+
+  playGameOver() {
+    this.tone({ freq: 360, slideTo: 190, duration: 0.2, volume: 0.1, type: "sawtooth" });
+    this.tone({ freq: 220, slideTo: 130, duration: 0.2, volume: 0.08, type: "triangle", delay: 0.1 });
+  }
+
+  playScoreSubmit() {
+    this.tone({ freq: 510, duration: 0.08, volume: 0.09, type: "triangle" });
+    this.tone({ freq: 680, duration: 0.1, volume: 0.1, type: "sine", delay: 0.05 });
+  }
+
+  private tone(options: {
+    freq: number;
+    duration: number;
+    volume: number;
+    type: OscillatorType;
+    slideTo?: number;
+    delay?: number;
+  }) {
+    const ctx = this.context;
+    const master = this.master;
+    if (!ctx || !master || ctx.state === "closed") return;
+
+    const startAt = ctx.currentTime + (options.delay ?? 0);
+    const endAt = startAt + options.duration;
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+
+    osc.type = options.type;
+    osc.frequency.setValueAtTime(Math.max(40, options.freq), startAt);
+    if (options.slideTo) {
+      osc.frequency.exponentialRampToValueAtTime(Math.max(40, options.slideTo), endAt);
+    }
+
+    gain.gain.setValueAtTime(0.0001, startAt);
+    gain.gain.exponentialRampToValueAtTime(Math.max(0.0001, options.volume), startAt + 0.012);
+    gain.gain.exponentialRampToValueAtTime(0.0001, endAt);
+
+    osc.connect(gain);
+    gain.connect(master);
+    osc.start(startAt);
+    osc.stop(endAt + 0.02);
+    osc.onended = () => {
+      osc.disconnect();
+      gain.disconnect();
+    };
+  }
+
+  private noise(options: { duration: number; volume: number; centerFreq: number; delay?: number }) {
+    const ctx = this.context;
+    const master = this.master;
+    if (!ctx || !master || ctx.state === "closed") return;
+
+    const buffer = this.getNoiseBuffer();
+    if (!buffer) return;
+
+    const source = ctx.createBufferSource();
+    source.buffer = buffer;
+    const filter = ctx.createBiquadFilter();
+    filter.type = "bandpass";
+    filter.frequency.setValueAtTime(options.centerFreq, ctx.currentTime);
+    filter.Q.setValueAtTime(0.7, ctx.currentTime);
+
+    const gain = ctx.createGain();
+    const startAt = ctx.currentTime + (options.delay ?? 0);
+    const endAt = startAt + options.duration;
+    gain.gain.setValueAtTime(0.0001, startAt);
+    gain.gain.exponentialRampToValueAtTime(Math.max(0.0001, options.volume), startAt + 0.01);
+    gain.gain.exponentialRampToValueAtTime(0.0001, endAt);
+
+    source.connect(filter);
+    filter.connect(gain);
+    gain.connect(master);
+
+    source.start(startAt);
+    source.stop(endAt + 0.02);
+    source.onended = () => {
+      source.disconnect();
+      filter.disconnect();
+      gain.disconnect();
+    };
+  }
+
+  private getNoiseBuffer() {
+    const ctx = this.context;
+    if (!ctx) return null;
+    if (this.noiseBuffer) return this.noiseBuffer;
+
+    const length = Math.floor(ctx.sampleRate * 0.3);
+    const buffer = ctx.createBuffer(1, length, ctx.sampleRate);
+    const data = buffer.getChannelData(0);
+    for (let i = 0; i < length; i += 1) {
+      data[i] = Math.random() * 2 - 1;
+    }
+    this.noiseBuffer = buffer;
+    return buffer;
+  }
+
+  private loadMutedPreference() {
+    try {
+      return window.localStorage.getItem(SFX_MUTED_KEY) === "1";
+    } catch {
+      return false;
+    }
+  }
+
+  private persistMutedPreference() {
+    try {
+      window.localStorage.setItem(SFX_MUTED_KEY, this.muted ? "1" : "0");
+    } catch {
+      // Ignore storage failures (e.g. privacy mode).
+    }
+  }
+
+  private applyMasterGain() {
+    if (!this.master) return;
+    this.master.gain.value = this.muted ? 0 : this.masterVolume;
+  }
+}
+
 export default function Match3Game() {
   const mountRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
     let game: import("phaser").Game | null = null;
+    const sfx = new ProceduralSfx();
     const container = mountRef.current;
     const nameEntryInput = document.createElement("input");
     nameEntryInput.type = "text";
@@ -86,6 +307,7 @@ export default function Match3Game() {
         private gameOverText!: Phaser.GameObjects.Text;
         private countdownText!: Phaser.GameObjects.Text;
         private selectionRing!: Phaser.GameObjects.Graphics;
+        private sfxToggleText!: Phaser.GameObjects.Text;
 
         private overlayShade!: Phaser.GameObjects.Rectangle;
         private startPanel!: Phaser.GameObjects.Container;
@@ -132,6 +354,7 @@ export default function Match3Game() {
             strokeThickness: 8,
           });
           this.timerText.setOrigin(1, 0);
+          this.createSfxToggle();
 
           this.selectionRing = this.add.graphics().setVisible(false).setDepth(25);
 
@@ -167,6 +390,7 @@ export default function Match3Game() {
           this.keyboardHandler = (event: KeyboardEvent) => this.handleKeyboard(event);
           this.input.keyboard?.on("keydown", this.keyboardHandler);
           this.input.on("pointerdown", () => {
+            sfx.unlock();
             if (this.phase === "nameEntry") {
               this.focusNameInput();
             }
@@ -456,6 +680,46 @@ export default function Match3Game() {
             .setVisible(false);
         }
 
+        private createSfxToggle() {
+          this.sfxToggleText = this.add
+            .text(GAME_WIDTH - 20, 78, "", {
+              color: "#f8fafc",
+              fontSize: "18px",
+              fontStyle: "bold",
+              padding: { x: 12, y: 8 },
+              stroke: "#0f172a",
+              strokeThickness: 4,
+            })
+            .setOrigin(1, 0)
+            .setDepth(62)
+            .setInteractive({ useHandCursor: true });
+
+          this.updateSfxToggleText();
+          this.sfxToggleText.on(
+            "pointerdown",
+            (
+              _pointer: Phaser.Input.Pointer,
+              _localX: number,
+              _localY: number,
+              event: Phaser.Types.Input.EventData,
+            ) => {
+              event.stopPropagation();
+              sfx.unlock();
+              const muted = sfx.toggleMuted();
+              this.updateSfxToggleText();
+              if (!muted) {
+                sfx.playSelect();
+              }
+            },
+          );
+        }
+
+        private updateSfxToggleText() {
+          const muted = sfx.isMuted();
+          this.sfxToggleText.setText(muted ? "SFX OFF" : "SFX ON");
+          this.sfxToggleText.setBackgroundColor(muted ? "rgba(71,85,105,0.88)" : "rgba(22,101,52,0.88)");
+        }
+
         private showStartScreen() {
           this.phase = "start";
           this.locked = true;
@@ -466,6 +730,8 @@ export default function Match3Game() {
           this.overlayShade.setVisible(true).setAlpha(0.56);
           this.startPanel.setVisible(true).setAlpha(1).setScale(1);
           this.input.once("pointerdown", () => {
+            sfx.unlock();
+            sfx.playStart();
             void this.startCountdown();
           });
         }
@@ -479,6 +745,11 @@ export default function Match3Game() {
 
           const sequence = ["3", "2", "1", "GO!"];
           for (const label of sequence) {
+            if (label === "GO!") {
+              sfx.playGo();
+            } else {
+              sfx.playCountdownTick(Number(label));
+            }
             this.countdownText.setText(label).setAlpha(0).setScale(0.6);
             await this.tween(this.countdownText, { alpha: 1, scale: 1.06 }, 170, "Back.easeOut");
             await this.delay(label === "GO!" ? 180 : 120);
@@ -496,6 +767,7 @@ export default function Match3Game() {
           this.locked = true;
           this.selected = null;
           this.selectionRing.setVisible(false);
+          sfx.playGameOver();
           void this.tween(this.gameOverText, { alpha: 1, scale: 1.05 }, 180, "Quad.easeOut");
 
           this.overlayShade.setVisible(true).setAlpha(0);
@@ -509,6 +781,7 @@ export default function Match3Game() {
         }
 
         private handleKeyboard(event: KeyboardEvent) {
+          sfx.unlock();
           if (document.activeElement === nameEntryInput) return;
           if (this.phase === "nameEntry") {
             this.handleNameEntry(event);
@@ -545,6 +818,7 @@ export default function Match3Game() {
 
         private submitNameEntry() {
           if (this.nameEntry.length !== 3) return;
+          sfx.playScoreSubmit();
           this.saveScore(this.nameEntry, this.score);
           this.showScoreboardScreen();
         }
@@ -868,6 +1142,7 @@ export default function Match3Game() {
           if (!this.selected) {
             this.selected = pos;
             this.showSelection(pos);
+            sfx.playSelect();
             return;
           }
 
@@ -875,12 +1150,14 @@ export default function Match3Game() {
           if (first.row === pos.row && first.col === pos.col) {
             this.selected = null;
             this.selectionRing.setVisible(false);
+            sfx.playSelect();
             return;
           }
 
           if (!this.isCardinalNeighbor(first, pos)) {
             this.selected = pos;
             this.showSelection(pos);
+            sfx.playSelect();
             return;
           }
 
@@ -888,10 +1165,12 @@ export default function Match3Game() {
           this.selectionRing.setVisible(false);
           this.selected = null;
 
+          sfx.playSwap();
           await this.swapCells(first, pos);
           const matches = this.findMatches();
           if (matches.length === 0) {
             await this.swapCells(first, pos);
+            sfx.playInvalidMove();
             await this.maybeResetIfNoMoves();
             this.locked = false;
             return;
@@ -914,6 +1193,7 @@ export default function Match3Game() {
           let matches = initialMatches;
           while (matches.length > 0) {
             const popped = await this.popMatches(matches);
+            sfx.playMatch(popped);
             this.score += popped * 10;
             this.scoreText.setText(`SCORE ${this.score.toString().padStart(5, "0")}`);
             await this.applyGravityAndRefill();
@@ -929,6 +1209,7 @@ export default function Match3Game() {
           this.clearIdleHint(false);
           this.selected = null;
           this.selectionRing.setVisible(false);
+          sfx.playNoMoves();
           this.countdownText.setText("NO MOVES").setVisible(true).setAlpha(0).setScale(0.8);
           await this.tween(this.countdownText, { alpha: 1, scale: 1 }, 160, "Quad.easeOut");
           await this.delay(220);
@@ -1002,6 +1283,9 @@ export default function Match3Game() {
           }
 
           await Promise.all(moves);
+          if (moves.length > 0) {
+            sfx.playDrop();
+          }
         }
 
         private bindBallPointer(sprite: import("phaser").GameObjects.Image, row: number, col: number) {
@@ -1149,6 +1433,7 @@ export default function Match3Game() {
         }
 
         private onPlayerInteraction() {
+          sfx.unlock();
           if (this.phase === "play") {
             this.lastInteractionMs = this.time.now;
             this.clearIdleHint(true);
@@ -1281,6 +1566,7 @@ export default function Match3Game() {
       if (game) {
         game.destroy(true);
       }
+      sfx.destroy();
       nameEntryInput.remove();
     };
   }, []);
